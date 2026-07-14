@@ -1,7 +1,7 @@
 {
   "name": "@averildwi/nest-common",
   "version": "1.0.0",
-  "description": "Generator otomatis untuk memasang folder common komplit ke proyek NestJS",
+  "description": "Automated generator to inject a complete common folder into NestJS",
   "main": "index.js",
   "bin": {
     "nest-common": "./index.js"
