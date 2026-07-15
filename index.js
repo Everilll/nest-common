@@ -23,7 +23,6 @@ function fail(msg, err) {
   process.exit(1);
 }
 
-// Escape string user input supaya aman disisipkan ke dalam template literal single-quote.
 function escapeForSingleQuoteString(str) {
   return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
@@ -34,7 +33,7 @@ async function generateCommon() {
   const appModulePath = path.join(process.cwd(), 'src', 'app.module.ts');
   const mainTsPath = path.join(process.cwd(), 'src', 'main.ts');
 
-  // ── Validasi awal ────────────────────────────────────────────
+  // ── Early Validation ────────────────────────────────────────────
   if (!fs.existsSync(path.join(process.cwd(), 'src'))) {
     fail('Error: "src" folder not found! Please run this command inside the root of your NestJS project.');
   }
@@ -85,7 +84,7 @@ async function generateCommon() {
   ]);
 
 
-  // ── [1/5] Copy folder common (tanpa menimpa file yang sudah ada) ──
+  // ── [1/5] Copy common folder ──
   let skippedFiles = [];
   try {
     log('cyan', '📂 [1/5] Injecting universal common modules into src/common...');
@@ -94,8 +93,6 @@ async function generateCommon() {
       log('yellow', '⚠️ [Warning] src/common already exists — only missing files will be added, existing files are left untouched.');
     }
 
-    // Kumpulkan daftar file yang bakal di-skip biar user tau file mana aja yang gak keupdate
-    // (pakai walker manual, bukan fs.readdir recursive, biar tetap jalan di Node 18)
     async function walk(dir) {
       const entries = await fs.readdir(dir, { withFileTypes: true });
       let files = [];
@@ -132,7 +129,7 @@ async function generateCommon() {
     fail('Failed to copy common folder structure.', err);
   }
 
-  // ── [2/5] Auto-register ke app.module.ts ────────────────────────
+  // ── [2/5] Auto-register to app.module.ts ────────────────────────
   try {
     if (fs.existsSync(appModulePath)) {
       log('cyan', '✍️ [2/5] Auto-registering AppConfigModule and HashingModule into src/app.module.ts...');
@@ -145,8 +142,6 @@ async function generateCommon() {
       if (hasImportLine && hasModuleUsage) {
         log('yellow', '⚠️ [Skip] Modules are already registered inside app.module.ts.');
       } else {
-        // Sisipkan import setelah baris import terakhir yang ada (bukan asal ditumpuk paling atas),
-        // biar shebang/comment block di atas file gak keganggu.
         if (!hasImportLine) {
           const importLines =
             `import { AppConfigModule } from './common/config/app-config.module';\n` +
@@ -162,7 +157,7 @@ async function generateCommon() {
           }
         }
 
-        // Sisipkan ke imports: [...] array
+        // regist to imports: [...] array
         if (!hasModuleUsage) {
           const importsRegex = /(imports\s*:\s*\[)/;
           if (importsRegex.test(appModuleContent)) {
@@ -188,7 +183,7 @@ async function generateCommon() {
     fail('Failed to inject code into app.module.ts automatically.', err);
   }
 
-  // ── [3/5] Auto-inject CORS/Pipes/Interceptors/Swagger ke src/main.ts ──
+  // ── [3/5] Auto-inject CORS/Pipes/Interceptors/Swagger to src/main.ts ──
   try {
     if (fs.existsSync(mainTsPath)) {
       log('cyan', '⚙️ [3/5] Injecting CORS, Interceptors, Pipes, and Swagger into src/main.ts...');
@@ -197,9 +192,9 @@ async function generateCommon() {
 
       const hasCommonImport = mainContent.includes('createValidationPipe');
       const hasCors = mainContent.includes('app.enableCors');
-      const hasSwaggerSetup = mainContent.includes('SwaggerModule.createDocument');
+      const hasSwaggerSetup =
+        mainContent.includes('SwaggerModule.createDocument') || mainContent.includes('SwaggerModule.setup(');
 
-      // ── Import block, disisipkan setelah import terakhir (bukan ditumpuk mentah di baris pertama) ──
       if (!hasCommonImport) {
         let importBlock =
           `import { createValidationPipe } from './common/pipes/validation.pipe.config';\n` +
@@ -233,10 +228,13 @@ async function generateCommon() {
         injectionCode += `  app.useGlobalPipes(createValidationPipe());\n`;
         injectionCode += `  app.useGlobalInterceptors(new LoggerInterceptor(), new TransformInterceptor());\n`;
         injectionCode += `  app.useGlobalFilters(new GlobalExceptionFilter(), new PrismaExceptionFilter());\n`;
+      } else {
+        log('yellow', '⚠️ [Skip] CORS/pipes/interceptors/filters already configured in main.ts.');
       }
 
-      // ── Swagger, dicek independen dari CORS supaya gak ketinggalan kalau CORS udah pernah di-inject ──
-      if (answers.useSwagger && !hasSwaggerSetup) {
+      if (answers.useSwagger && hasSwaggerSetup) {
+        log('yellow', '⚠️ [Skip] Swagger is already configured in main.ts — leaving your existing setup untouched.');
+      } else if (answers.useSwagger && !hasSwaggerSetup) {
         const title = escapeForSingleQuoteString(answers.swaggerTitle);
         const desc = escapeForSingleQuoteString(answers.swaggerDesc);
         const version = escapeForSingleQuoteString(answers.swaggerVersion);
@@ -265,7 +263,6 @@ async function generateCommon() {
       const appCreationRegex = /(const\s+app\s*=\s*await\s+NestFactory\.create(?:<[^>]*>)?\(AppModule\);)/;
 
       if (injectionCode.length === 0) {
-        log('yellow', '⚠️ [Skip] main.ts already has CORS/pipes/interceptors and (if requested) Swagger configured.');
       } else if (appCreationRegex.test(mainContent)) {
         mainContent = mainContent.replace(appCreationRegex, `$1\n${injectionCode}`);
         if (mainContent !== original) {
@@ -286,15 +283,13 @@ async function generateCommon() {
     fail('Failed to modify src/main.ts file.', err);
   }
 
-  // ── [4/5] Setup .env.example (bukan langsung ke .env) ───────────
+  // ── [4/5] Setup .env.example ───────────
   try {
     const envExamplePath = path.join(process.cwd(), '.env.example');
     const gitignorePath = path.join(process.cwd(), '.gitignore');
 
     log('cyan', '📝 [4/5] Checking and configuring variables inside .env.example...');
 
-    // Cetak biru template env sesuai schema Joi. JWT_SECRET di-generate random,
-    // bukan hardcoded, supaya tiap project punya secret sendiri-sendiri.
     const envBlueprint = {
       DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/mydb?schema=public',
       PORT: '3000',
@@ -332,7 +327,6 @@ async function generateCommon() {
 
     log('cyan', '   → Copy the values you need from .env.example into your own .env file.');
 
-    // Cek .gitignore biar .env gak ke-commit gak sengaja
     if (fs.existsSync(gitignorePath)) {
       const gitignoreContent = await fs.readFile(gitignorePath, 'utf8');
       if (!/^\.env$/m.test(gitignoreContent)) {
@@ -363,7 +357,7 @@ async function generateCommon() {
     fail('npm dependency installation failed. Please check your network or package.json.', err);
   }
 
-  // ── Optional: lint fix, dipisah biar error-nya gak nyampur sama step install ──
+  // ── Optional: lint ──
   try {
     const pkgJsonPath = path.join(process.cwd(), 'package.json');
     if (fs.existsSync(pkgJsonPath)) {
