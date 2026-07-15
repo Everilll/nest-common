@@ -5,10 +5,12 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen)](https://nodejs.org)
 [![NestJS](https://img.shields.io/badge/NestJS-v11-red)](https://nestjs.com)
 
-A collection of reusable modules (filters, guards, interceptors, pipes, decorators,
-config, helpers) for bootstrapping new [NestJS](https://nestjs.com/)
-projects. Built to avoid rewriting the same boilerplate for every new backend—just install,
-register in `main.ts`, and you're ready to go.
+An interactive CLI scaffolder that injects a collection of reusable modules
+(filters, guards, interceptors, pipes, decorators, config, helpers) into a
+[NestJS](https://nestjs.com/) project — plus automatic `main.ts` wiring
+(CORS, global pipes/interceptors/filters, optional Swagger setup) and
+`.env.example` generation. Built to avoid rewriting the same boilerplate for
+every new backend: just run one command and you're ready to go.
 
 ## Installation
 
@@ -18,17 +20,54 @@ npx @averildwi/nest-common
 
 ### Peer dependencies
 
-This package doesn't bundle its dependencies, so make sure your project
-also has these installed:
+This package doesn't bundle its dependencies — the CLI installs them into
+your project automatically:
 
 ```bash
-npm install @nestjs/common @nestjs/core @nestjs/config @nestjs/passport @nestjs/swagger
+# installed automatically by the CLI
+npm install @nestjs/config @nestjs/passport @nestjs/swagger
 npm install class-validator class-transformer joi
-npm install @prisma/client
 ```
 
-> `@prisma/client` is only required if you use `PrismaExceptionFilter`.
-> If your ORM isn't Prisma, just skip that filter and everything else works fine.
+You still need `@nestjs/common`, `@nestjs/core`, and `@prisma/client`
+(only if you use `PrismaExceptionFilter`) set up in your project beforehand.
+
+> If your ORM isn't Prisma, just skip `PrismaExceptionFilter` — everything
+> else works fine.
+
+## What the CLI Does
+
+```
+npx @averildwi/nest-common
+   │
+   ▼
+[1/5] Copy common modules into src/common (existing files are never overwritten)
+   │
+   ▼
+[2/5] Register AppConfigModule + HashingModule into src/app.module.ts
+   │
+   ▼
+[3/5] Wire src/main.ts — CORS, global pipes/interceptors/filters,
+      and (optional, asked interactively) Swagger docs
+   │
+   ▼
+[4/5] Generate/patch .env.example with required Joi variables
+      (JWT_SECRET is randomly generated per project)
+   │
+   ▼
+[5/5] Install dependencies + auto-run lint fix if configured
+```
+
+The CLI is **idempotent** — running it again on a project that already has
+these files won't overwrite your changes; it only fills in what's missing
+and warns you about what it skipped.
+
+### Interactive prompts
+
+| Prompt | When it appears |
+|---|---|
+| Setup Swagger API Documentation? | Always |
+| Swagger title / description / version / docs path | Only if Swagger is enabled |
 
 ## Package Contents
 
@@ -46,12 +85,22 @@ npm install @prisma/client
 
 ## Quick Start
 
-### 1. Setup config & env validation
+### 1. Run the scaffolder
+
+```bash
+npx @averildwi/nest-common
+```
+
+Answer the Swagger prompt (and the follow-up questions if you enable it).
+Everything else — copying modules, registering `AppModule`, wiring
+`main.ts`, generating `.env.example`, installing dependencies — is handled
+automatically.
+
+### 2. Fill in project-specific env vars (optional)
 
 ```typescript
 // src/config/app-config.module.ts
 import * as Joi from 'joi';
-// Import from your newly generated local folder!
 import { AppConfigModule } from '../common/config/app-config.module';
 
 export const ProjectConfigModule = AppConfigModule.forProject(
@@ -65,55 +114,29 @@ export const ProjectConfigModule = AppConfigModule.forProject(
 ```
 
 ```typescript
-// src/app.module.ts
+// src/app.module.ts — ProjectConfigModule needs to be added manually
+// if you defined extra env vars; AppConfigModule.forProject() (default,
+// no extra schema) is already registered by the CLI.
 import { Module } from '@nestjs/common';
 import { ProjectConfigModule } from './config/app-config.module';
-// Import from your local common folder
-import { HashingModule } from './common/hashing/hashing.module';
 
 @Module({
-  imports: [ProjectConfigModule, HashingModule /* other modules */],
+  imports: [ProjectConfigModule /* other modules */],
 })
 export class AppModule {}
 ```
 
-### 2. Bootstrap in main.ts
+### 3. Copy values from `.env.example` into your `.env`
 
-```typescript
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
-// Import all utilities from your local common folder
-import { LoggerInterceptor } from './common/interceptors/logger.interceptor';
-import { TransformInterceptor } from './common/interceptors/transform.interceptor';
-import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
-import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
-import { createValidationPipe } from './common/pipes/validation.pipe.config';
+The CLI generates `.env.example` with the variables required by
+`baseEnvSchema`, using a randomly generated `JWT_SECRET`. Copy what you
+need into your own `.env` (which should stay out of git — the CLI warns
+you if `.env` isn't in `.gitignore`).
 
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-
-  app.useGlobalInterceptors(
-    new LoggerInterceptor(),
-    new TransformInterceptor(),
-  );
-
-  app.useGlobalPipes(createValidationPipe());
-
-  app.useGlobalFilters(
-    new GlobalExceptionFilter(),
-    new PrismaExceptionFilter(),
-  );
-
-  await app.listen(process.env.PORT ?? 3000);
-}
-bootstrap();
-```
-
-### 3. Use in controller
+### 4. Use in a controller
 
 ```typescript
 import { Controller, Get, UseGuards } from '@nestjs/common';
-// Import semuanya dari folder common lokal proyek Anda
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -141,6 +164,39 @@ export class UsersController {
     return user;
   }
 }
+```
+
+## What Gets Generated in `main.ts`
+
+```typescript
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  // ── Injected by @averildwi/nest-common ──
+  const allowedOrigins = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',') : '*';
+  app.enableCors({
+    origin: allowedOrigins,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  });
+  app.useGlobalPipes(createValidationPipe());
+  app.useGlobalInterceptors(new LoggerInterceptor(), new TransformInterceptor());
+  app.useGlobalFilters(new GlobalExceptionFilter(), new PrismaExceptionFilter());
+
+  // Only if Swagger is enabled during setup
+  const config = new DocumentBuilder()
+    .setTitle('My API')
+    .setDescription('API documentation')
+    .setVersion('1.0')
+    .addBearerAuth(/* ... */, 'access-token')
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('docs', app, document, {
+    swaggerOptions: { persistAuthorization: true },
+  });
+
+  await app.listen(process.env.PORT ?? 3000);
+}
+bootstrap();
 ```
 
 ## Response Shape
@@ -193,6 +249,12 @@ Controller/Service
 
 ## Important Notes
 
+- **The CLI never overwrites existing files.** If `src/common`,
+  `app.module.ts` registration, or `main.ts` wiring already exist, those
+  steps are skipped with a warning instead of silently replacing your code.
+- **`.env.example`, not `.env`, is generated/patched** — the CLI never
+  touches your real `.env`, so your actual credentials are never at risk.
+  `JWT_SECRET` is randomly generated per run, never hardcoded.
 - **`RolesGuard`** assumes `user.role` is a single string. If your project
   needs multi-role per user (array), extend/override it yourself.
 - **`JwtAuthGuard`** must run before `RolesGuard` in the
@@ -202,6 +264,7 @@ Controller/Service
 - `baseEnvSchema` only covers universal env vars (DATABASE_URL, PORT,
   NODE_ENV, FRONTEND_URL, JWT_SECRET, JWT_EXPIRES_IN). Project-specific env vars
   are added via `AppConfigModule.forProject(extraSchema)`.
+- Not yet tested with `pnpm`/`yarn` — NPM is assumed.
 
 ## License
 
