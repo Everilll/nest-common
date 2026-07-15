@@ -2,6 +2,7 @@
 
 const fs = require('fs-extra');
 const path = require('path');
+const crypto = require('crypto');
 const { execSync } = require('child_process');
 
 const COLORS = {
@@ -38,10 +39,10 @@ async function generateCommon() {
 
   log('magenta', '💎 Welcome to @averildwi/nest-common Scaffolder 💎\n');
 
-  // ── [1/3] Copy folder common (tanpa menimpa file yang sudah ada) ──
+  // ── [1/3] Copy folder common ──
   let skippedFiles = [];
   try {
-    log('cyan', '📂 [1/3] Injecting universal common modules into src/common...');
+    log('cyan', '📂 [1/4] Injecting universal common modules into src/common...');
 
     if (fs.existsSync(targetDir)) {
       log('yellow', '⚠️ [Warning] src/common already exists — only missing files will be added, existing files are left untouched.');
@@ -86,7 +87,7 @@ async function generateCommon() {
   // ── [2/3] Auto-register to app.module.ts ────────────────────────
   try {
     if (fs.existsSync(appModulePath)) {
-      log('cyan', '✍️ [2/3] Auto-registering AppConfigModule and HashingModule into src/app.module.ts...');
+      log('cyan', '✍️ [2/4] Auto-registering AppConfigModule and HashingModule into src/app.module.ts...');
       let appModuleContent = await fs.readFile(appModulePath, 'utf8');
       const original = appModuleContent;
 
@@ -137,7 +138,63 @@ async function generateCommon() {
     fail('Failed to inject code into app.module.ts automatically.', err);
   }
 
-  // ── [3/3] Install dependencies ───────────────────────────────
+  // ── [3/4] Setup .env.example (bukan langsung ke .env) ───────────
+  try {
+    const envExamplePath = path.join(process.cwd(), '.env.example');
+    const gitignorePath = path.join(process.cwd(), '.gitignore');
+
+    log('cyan', '📝 [3/4] Checking and configuring variables inside .env.example...');
+
+    const envBlueprint = {
+      DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/mydb?schema=public',
+      PORT: '3000',
+      NODE_ENV: 'development',
+      FRONTEND_URL: '*',
+      JWT_SECRET: crypto.randomBytes(32).toString('hex'),
+      JWT_EXPIRES_IN: '7d',
+    };
+
+    if (!fs.existsSync(envExamplePath)) {
+      let envContent = '';
+      for (const [key, value] of Object.entries(envBlueprint)) {
+        envContent += `${key}="${value}"\n`;
+      }
+      await fs.writeFile(envExamplePath, envContent, 'utf8');
+      log('green', '✅ [Success] .env.example created with default Joi requirements!');
+    } else {
+      let currentEnvContent = await fs.readFile(envExamplePath, 'utf8');
+      let patchedLines = '';
+      for (const [key, value] of Object.entries(envBlueprint)) {
+        const hasVariable = new RegExp(`^${key}\\s*=`, 'm').test(currentEnvContent);
+        if (!hasVariable) {
+          patchedLines += `${key}="${value}"\n`;
+        }
+      }
+      if (patchedLines.length > 0) {
+        currentEnvContent =
+          currentEnvContent.trimEnd() + '\n\n# Added by @averildwi/nest-common\n' + patchedLines;
+        await fs.writeFile(envExamplePath, currentEnvContent, 'utf8');
+        log('green', '✅ [Success] Patched missing Joi variables into your existing .env.example!');
+      } else {
+        log('yellow', '⚠️ [Skip] Your existing .env.example already contains all required Joi variables.');
+      }
+    }
+
+    log('cyan', '   → Copy the values you need from .env.example into your own .env file.');
+
+    if (fs.existsSync(gitignorePath)) {
+      const gitignoreContent = await fs.readFile(gitignorePath, 'utf8');
+      if (!/^\.env$/m.test(gitignoreContent)) {
+        log('yellow', '⚠️ [Warning] ".env" is not listed in .gitignore — add it to avoid committing real secrets.');
+      }
+    } else {
+      log('yellow', '⚠️ [Warning] No .gitignore found — make sure your real .env file is never committed.');
+    }
+  } catch (err) {
+    log('yellow', '⚠️ [Warning] Failed to safely patch .env.example — please review your environment variables manually.');
+  }
+
+  // ── [4/4] Install dependencies ───────────────────────────────
   try {
     const dependencies = [
       '@nestjs/config',
@@ -148,14 +205,14 @@ async function generateCommon() {
       'joi',
     ].join(' ');
 
-    log('cyan', '\n📦 [3/3] Installing core framework and ecosystem dependencies...');
+    log('cyan', '\n📦 [4/4] Installing core framework and ecosystem dependencies...');
     execSync(`npm install ${dependencies}`, { stdio: 'inherit' });
     log('green', '✅ [Success] All required dependencies successfully installed via npm.');
   } catch (err) {
     fail('npm dependency installation failed. Please check your network or package.json.', err);
   }
 
-  // ── Optional: lint fix
+  // ── Optional: lint fix ──
   try {
     const pkgJsonPath = path.join(process.cwd(), 'package.json');
     if (fs.existsSync(pkgJsonPath)) {
