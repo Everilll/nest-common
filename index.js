@@ -379,6 +379,7 @@ async function generateCommon() {
   }
 
   log('magenta', '\n🎉 [Scaffolding Completed] Your project architecture is ready!');
+  log('cyan', '📖 Full documentation: https://github.com/Everilll/nest-common\n');
 }
 
 generateCommon().catch((err) => {
